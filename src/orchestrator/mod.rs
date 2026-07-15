@@ -6,32 +6,36 @@
 //!  │ Lock + DB │   │ target +   │   │ Runtime + MCP │   │ compact +    │
 //!  │           │◀──│  skills    │◀──│ + inject      │◀──│ persist      │
 //!  └───────────┘   └────────────┘   └───────────────┘   └──────────────┘
-//!                                       │
-//!                                  ┌────┴────┐
-//!                                  │ MCP     │
-//!                                  │ config  │
-//!                                  └─────────┘
 //! ```
 
+use std::time::Instant;
+
+use uuid::Uuid;
+
 use crate::bridge::{manifest::AgentStackManifest, BridgeConfig, OpenCodeBridge};
-use crate::checkout::{skills, target, Workspace};
+use crate::checkout::{credentials::GitCredentials, skills, target, Workspace};
 use crate::error::{ConductorError, Result};
-use crate::mcp::{CacheMode, CodebaseMemoryMcp};
+use crate::mcp::{preindex, CacheMode, CodebaseMemoryMcp};
 use crate::models::{AgentTask, SessionStatus};
 use crate::runtime::{self, RuntimeKind};
 use crate::server::AppState;
 use crate::teardown;
-use uuid::Uuid;
 
 /// Execute the full agent session lifecycle.
 pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> Result<()> {
+    let session_start = Instant::now();
+
     // ── Layer 1: Acquire distributed lock ────────────────────
     state
         .db
         .update_session_status(session_id, SessionStatus::Preparing)
         .await?;
 
+    crate::server::metrics_recorder::lock_acquired("attempted");
+
     let lock = state.locks.acquire(task.tenant_id, &task.branch).await?;
+
+    crate::server::metrics_recorder::lock_acquired("acquired");
 
     // ── Layer 2: Dual-Checkout ───────────────────────────────
     let project = state.db.get_project(task.project_id).await?;
@@ -45,6 +49,7 @@ pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> 
     );
     workspace.ensure_root()?;
 
+    let _creds = GitCredentials::from_env();
     let target_repo = target::prepare_target(&workspace.target, &project.repo_url, &task.branch)?;
     let _skills_repo = skills::prepare_skills(&workspace.skills, &task.skills_repo)?;
 
@@ -52,23 +57,23 @@ pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> 
     let manifest_path = workspace.skills.join("manifest.json");
     let manifest = load_manifest(&manifest_path)?;
 
-    // ── MCP Setup ────────────────────────────────────────────
-    // Configure codebase-memory-mcp scoped to /target.
-    let cache_mode = if workspace.mcp_cache.exists() {
-        CacheMode::Persistent
-    } else {
-        CacheMode::Ephemeral
-    };
+    // ── Smart MCP Pre-indexing ───────────────────────────────
+    let analysis = preindex::analyze_repo(&target_repo)?;
+    let cache_mode = preindex::decide_cache_mode(&analysis, workspace.mcp_cache.exists());
 
     let mcp = CodebaseMemoryMcp::new("/target", cache_mode)
         .map_err(|e| ConductorError::Other(format!("MCP setup failed: {e}")))?;
 
-    // Write MCP settings to a temp file that will be mounted into the guest.
     let mcp_settings_host = workspace.root.join("mcp_settings.json");
     mcp.write_settings(&mcp_settings_host)?;
 
     if cache_mode == CacheMode::Persistent {
         workspace.ensure_mcp_cache()?;
+
+        // Check if existing cache is valid (skip re-index).
+        if preindex::is_cache_valid(&analysis, &workspace.mcp_cache)? {
+            tracing::info!(session_id = %session_id, "MCP cache valid — no re-index needed");
+        }
     }
 
     // Recover history from a previous session if resuming.
@@ -107,6 +112,8 @@ pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> 
 
     bridge.start(&bridge_config).await?;
 
+    crate::server::metrics_recorder::microvm_provisioned(bridge.runtime_name());
+
     let mut payload =
         OpenCodeBridge::build_payload(session_id, &task.instruction, history, &manifest);
     payload.mcp_settings_path = bridge
@@ -115,6 +122,14 @@ pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> 
         .map(|p| p.to_string_lossy().to_string());
 
     bridge.inject(&payload).await?;
+
+    // Publish status event for WebSocket subscribers.
+    state.events.publish(
+        session_id,
+        crate::bridge::LogEvent::Status {
+            status: "running".into(),
+        },
+    );
 
     let run_result = bridge.wait(state.config.session_timeout_secs).await;
 
@@ -144,6 +159,17 @@ pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> 
         SessionStatus::Failed
     };
 
+    // Update MCP cache metadata if persistent.
+    if cache_mode == CacheMode::Persistent {
+        let meta = preindex::CacheMeta {
+            indexed_commit_sha: analysis.head_sha.clone(),
+            indexed_at: chrono::Utc::now(),
+            file_count: analysis.file_count,
+            total_size_bytes: analysis.total_size_bytes,
+        };
+        let _ = preindex::write_cache_meta(&workspace.mcp_cache, &meta);
+    }
+
     state
         .db
         .finalize_session(
@@ -155,18 +181,28 @@ pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> 
         )
         .await?;
 
+    // Publish final event for WebSocket subscribers.
+    state.events.publish(
+        session_id,
+        crate::bridge::LogEvent::Done {
+            commit_sha: commit_sha.clone(),
+        },
+    );
+
+    // Metrics
+    let duration = session_start.elapsed();
+    crate::server::metrics_recorder::session_completed(&tenant.slug, run_result.is_ok());
+    crate::server::metrics_recorder::session_duration(duration);
+    crate::server::metrics_recorder::tokens_consumed(&tenant.slug, tokens as u64);
+
     let _ = bridge.teardown().await;
-
-    // Clean up the MCP settings file.
     let _ = std::fs::remove_file(&mcp_settings_host);
-
-    // Clean up the workspace.
     let _ = teardown::persist::cleanup_workspace(&workspace.root);
+    state.events.remove_session(session_id);
 
-    // Release the distributed lock.
     lock.release().await?;
 
-    tracing::info!(%session_id, ?final_status, "session lifecycle complete");
+    tracing::info!(%session_id, ?final_status, ?duration, "session lifecycle complete");
     Ok(())
 }
 

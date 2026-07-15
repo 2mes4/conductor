@@ -16,6 +16,7 @@
 //! - [`target`] — mount the `/target` checkout (clone or fetch + reset)
 //! - [`skills`] — mount the `/skills` repository (independent of client code)
 
+pub mod credentials;
 pub mod skills;
 pub mod target;
 

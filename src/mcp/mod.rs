@@ -22,5 +22,6 @@
 //!   Subsequent sessions only re-index changed files (incremental).
 
 pub mod codebase_memory;
+pub mod preindex;
 
 pub use codebase_memory::{CacheMode, CodebaseMemoryMcp, McpServerConfig};

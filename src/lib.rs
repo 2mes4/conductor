@@ -29,6 +29,7 @@ pub mod runtime;
 pub mod server;
 pub mod state;
 pub mod teardown;
+pub mod worker;
 
 pub use config::Config;
 pub use error::{ConductorError, Result};

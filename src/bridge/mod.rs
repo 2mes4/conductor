@@ -8,7 +8,9 @@
 
 pub mod manifest;
 pub mod opencode;
+pub mod opencode_client;
 pub mod sanitize;
 
 pub use manifest::{AgentStackManifest, ToolDefinition};
 pub use opencode::{BridgeConfig, InjectionPayload, OpenCodeBridge};
+pub use opencode_client::{LogEvent, OpenCodeClient};

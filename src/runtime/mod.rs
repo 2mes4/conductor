@@ -14,6 +14,7 @@
 //! Both backends implement the [`AgentRuntime`] trait, so the orchestrator
 //! code is identical regardless of execution environment.
 
+pub mod firecracker;
 pub mod local;
 pub mod microvm;
 

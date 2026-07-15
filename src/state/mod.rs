@@ -9,6 +9,8 @@
 
 pub mod db;
 pub mod locks;
+pub mod queue;
+pub mod quotas;
 
 pub use db::Database;
 pub use locks::LockManager;
