@@ -29,7 +29,7 @@ futures-util = "0.3"
 # Web server
 axum = { version = "0.7", features = ["ws", "macros"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "timeout"] }
+tower-http = { version = "0.7", features = ["cors", "trace", "timeout"] }
 hyper = "1"
 
 # Database
