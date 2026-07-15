@@ -1,0 +1,44 @@
+{
+  "name": "default-agent-stack",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "id": "lint",
+      "name": "Code Linter",
+      "executable": "tools/lint.sh",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "description": "Path to lint" }
+        },
+        "required": ["path"]
+      },
+      "write_access": false
+    },
+    {
+      "id": "test",
+      "name": "Test Runner",
+      "executable": "tools/test.sh",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "filter": { "type": "string", "description": "Test name filter" }
+        }
+      },
+      "write_access": false
+    },
+    {
+      "id": "format",
+      "name": "Code Formatter",
+      "executable": "tools/format.sh",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" }
+        },
+        "required": ["path"]
+      },
+      "write_access": true
+    }
+  ]
+}
