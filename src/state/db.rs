@@ -23,7 +23,7 @@ impl Database {
             .connect(url)
             .await?;
 
-        sqlx::migrate!("../migrations").run(&pool).await?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
 
         Ok(Self { pool })
     }
@@ -69,7 +69,7 @@ impl Database {
         .bind(session.status)
         .bind(&session.instruction)
         .bind(&session.history)
-        .bind(session.commit_sha)
+        .bind(session.commit_sha.clone())
         .bind(session.tokens_used)
         .execute(&self.pool)
         .await?;
@@ -84,11 +84,7 @@ impl Database {
         Ok(session)
     }
 
-    pub async fn update_session_status(
-        &self,
-        id: Uuid,
-        status: SessionStatus,
-    ) -> Result<()> {
+    pub async fn update_session_status(&self, id: Uuid, status: SessionStatus) -> Result<()> {
         sqlx::query("UPDATE sessions SET status = $2, updated_at = NOW() WHERE id = $1")
             .bind(id)
             .bind(status)
@@ -147,11 +143,10 @@ impl Database {
     }
 
     pub async fn get_or_create_tenant_by_slug(&self, slug: &str) -> Result<Tenant> {
-        let tenant =
-            sqlx::query_as::<_, Tenant>("SELECT * FROM tenants WHERE slug = $1")
-                .bind(slug)
-                .fetch_optional(&self.pool)
-                .await?;
+        let tenant = sqlx::query_as::<_, Tenant>("SELECT * FROM tenants WHERE slug = $1")
+            .bind(slug)
+            .fetch_optional(&self.pool)
+            .await?;
 
         match tenant {
             Some(t) => Ok(t),

@@ -14,6 +14,9 @@ pub enum ConductorError {
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 
+    #[error("migration error: {0}")]
+    Migrate(#[from] sqlx::migrate::MigrateError),
+
     #[error("git operation failed: {0}")]
     Git(#[from] git2::Error),
 

@@ -27,11 +27,7 @@ use crate::teardown;
 /// 2. **Prepare workspace** — Dual-Checkout of `/target` and `/skills`.
 /// 3. **Run agent** — spawn OpenCode, inject payload, wait for completion.
 /// 4. **Teardown** — compact history, commit + push, persist to DB, cleanup.
-pub async fn run_session(
-    state: AppState,
-    session_id: Uuid,
-    task: AgentTask,
-) -> Result<()> {
+pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> Result<()> {
     // ── Layer 1: Acquire distributed lock ────────────────────
     state
         .db
@@ -52,8 +48,7 @@ pub async fn run_session(
     );
     workspace.ensure_root()?;
 
-    let target_repo =
-        target::prepare_target(&workspace.target, &project.repo_url, &task.branch)?;
+    let target_repo = target::prepare_target(&workspace.target, &project.repo_url, &task.branch)?;
     let _skills_repo = skills::prepare_skills(&workspace.skills, &task.skills_repo)?;
 
     // Load the manifest from the skills directory.
@@ -77,8 +72,7 @@ pub async fn run_session(
         .update_session_status(session_id, SessionStatus::Running)
         .await?;
 
-    let opencode_path = std::env::var("OPENCODE_PATH")
-        .unwrap_or_else(|_| "opencode".into());
+    let opencode_path = std::env::var("OPENCODE_PATH").unwrap_or_else(|_| "opencode".into());
 
     let mut bridge = OpenCodeBridge::spawn(
         &PathBuf::from(&opencode_path),
@@ -88,12 +82,7 @@ pub async fn run_session(
     )
     .await?;
 
-    let payload = OpenCodeBridge::build_payload(
-        session_id,
-        &task.instruction,
-        history,
-        &manifest,
-    );
+    let payload = OpenCodeBridge::build_payload(session_id, &task.instruction, history, &manifest);
     bridge.inject(&payload).await?;
 
     let run_result = bridge

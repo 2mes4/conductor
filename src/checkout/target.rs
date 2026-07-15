@@ -8,7 +8,7 @@ use std::path::Path;
 
 use git2::{BranchType, Repository, ResetType};
 
-use crate::error::{ConductorError, Result};
+use crate::error::Result;
 
 /// Prepare the `/target` working directory for an agent session.
 ///
@@ -16,11 +16,7 @@ use crate::error::{ConductorError, Result};
 /// - If it exists → fetch + hard reset to the remote branch for a clean slate.
 ///
 /// Returns the [`Repository`] handle for further Git operations.
-pub fn prepare_target(
-    path: &Path,
-    repo_url: &str,
-    branch: &str,
-) -> Result<Repository> {
+pub fn prepare_target(path: &Path, repo_url: &str, branch: &str) -> Result<Repository> {
     if path.exists() && path.join(".git").exists() {
         tracing::info!(?path, "target exists — fetching and resetting");
         sync_existing(path, branch)
@@ -47,26 +43,30 @@ fn sync_existing(path: &Path, branch: &str) -> Result<Repository> {
     let repo = Repository::open(path)?;
 
     // Fetch all remotes.
-    let mut remote = repo.find_remote("origin")?;
-    remote.fetch(&[branch], None, None)?;
+    {
+        let mut remote = repo.find_remote("origin")?;
+        remote.fetch(&[branch], None, None)?;
+    }
 
-    // Resolve the remote branch ref: refs/remotes/origin/{branch}.
-    let remote_ref = format!("refs/remotes/origin/{branch}");
-    let fetch_head = repo.find_reference(&remote_ref)?;
-    let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
-
-    // Hard reset the working tree to match the remote.
-    let target = repo.find_commit(fetch_commit.id())?;
-    repo.reset(target.as_object(), ResetType::Hard, None)?;
+    // Resolve the remote branch ref and hard reset.
+    {
+        let remote_ref = format!("refs/remotes/origin/{branch}");
+        let fetch_head = repo.find_reference(&remote_ref)?;
+        let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
+        let target = repo.find_commit(fetch_commit.id())?;
+        repo.reset(target.as_object(), ResetType::Hard, None)?;
+    }
 
     // Check out the local branch (create it if missing).
-    if repo.find_branch(branch, BranchType::Local).is_err() {
-        let upstream = repo.find_branch(&format!("origin/{branch}"), BranchType::Remote)?;
-        let upstream_commit = upstream.get().peel_to_commit()?;
-        repo.branch(branch, &upstream_commit, false)?;
+    {
+        if repo.find_branch(branch, BranchType::Local).is_err() {
+            let upstream = repo.find_branch(&format!("origin/{branch}"), BranchType::Remote)?;
+            let upstream_commit = upstream.get().peel_to_commit()?;
+            repo.branch(branch, &upstream_commit, false)?;
+        }
+        repo.set_head(&format!("refs/heads/{branch}"))?;
+        repo.checkout_head(None)?;
     }
-    repo.set_head(&format!("refs/heads/{branch}"))?;
-    repo.checkout_head(None)?;
 
     tracing::info!(?path, branch, "target synced (fetch + hard reset)");
     Ok(repo)
@@ -87,10 +87,8 @@ pub fn commit_and_push(repo: &Repository, branch: &str, message: &str) -> Result
     let parent_commit = head.peel_to_commit()?;
 
     // Only commit if there are actual changes.
-    let diff = repo.diff_tree_to_workdir_with_index(
-        Some(&parent_commit.tree()?, None),
-        None,
-    )?;
+    let parent_tree = parent_commit.tree()?;
+    let diff = repo.diff_tree_to_workdir_with_index(Some(&parent_tree), None)?;
 
     if diff.stats()?.files_changed() == 0 {
         tracing::info!("no changes to commit in target");
@@ -98,19 +96,14 @@ pub fn commit_and_push(repo: &Repository, branch: &str, message: &str) -> Result
     }
 
     let sig = repo.signature()?;
-    let commit_id = repo.commit(
-        Some("HEAD"),
-        &sig,
-        &sig,
-        message,
-        &tree,
-        &[&parent_commit],
-    )?;
+    let commit_id = repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent_commit])?;
 
     // Push to the remote branch.
-    let mut remote = repo.find_remote("origin")?;
-    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-    remote.push(&[&refspec], None)?;
+    {
+        let mut remote = repo.find_remote("origin")?;
+        let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+        remote.push(&[&refspec], None)?;
+    }
 
     let sha = commit_id.to_string();
     tracing::info!(sha = %sha, "committed and pushed target changes");

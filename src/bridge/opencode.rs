@@ -97,11 +97,8 @@ impl OpenCodeBridge {
             .as_mut()
             .ok_or_else(|| ConductorError::OpenCode("process not running".into()))?;
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            child.wait(),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait()).await;
 
         match result {
             Ok(Ok(status)) if status.success() => {
@@ -123,9 +120,10 @@ impl OpenCodeBridge {
     /// Kill the OpenCode process if it is still running.
     pub async fn kill(&mut self) -> Result<()> {
         if let Some(child) = &mut self.child {
-            child.kill().await.map_err(|e| {
-                ConductorError::OpenCode(format!("failed to kill process: {e}"))
-            })?;
+            child
+                .kill()
+                .await
+                .map_err(|e| ConductorError::OpenCode(format!("failed to kill process: {e}")))?;
             tracing::warn!("OpenCode process killed");
         }
         Ok(())
@@ -133,6 +131,10 @@ impl OpenCodeBridge {
 
     pub fn target_dir(&self) -> &Path {
         &self.workspace_target
+    }
+
+    pub fn skills_dir(&self) -> &Path {
+        &self.workspace_skills
     }
 }
 

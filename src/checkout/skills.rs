@@ -18,12 +18,16 @@ pub fn prepare_skills(path: &Path, skills_repo_url: &str) -> Result<Repository> 
     if path.exists() && path.join(".git").exists() {
         tracing::info!(?path, "skills exist — pulling latest");
         let repo = Repository::open(path)?;
-        let mut remote = repo.find_remote("origin")?;
-        remote.fetch(&["refs/heads/*:refs/heads/*"], None, None)?;
+        {
+            let mut remote = repo.find_remote("origin")?;
+            remote.fetch(&["refs/heads/*:refs/heads/*"], None, None)?;
+        }
 
-        let head = repo.head()?;
-        let head_commit = head.peel_to_commit()?;
-        repo.reset(head_commit.as_object(), git2::ResetType::Hard, None)?;
+        {
+            let head = repo.head()?;
+            let head_commit = head.peel_to_commit()?;
+            repo.reset(head_commit.as_object(), git2::ResetType::Hard, None)?;
+        }
         Ok(repo)
     } else {
         if let Some(parent) = path.parent() {

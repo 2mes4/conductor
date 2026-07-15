@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::error::{ConductorError, Result};
 
 /// A held advisory lock. Dropping this value does **not** release the lock;
-//! call [`release`](Self::release) explicitly.
+/// call [`release`](Self::release) explicitly.
 pub struct AdvisoryLock {
     pool: PgPool,
     key: i64,
@@ -47,9 +47,9 @@ impl LockManager {
     /// combinations in distinct lock spaces.
     fn derive_key(project_id: Uuid, branch: &str) -> i64 {
         let uuid_hi = (project_id.as_u128() >> 64) as u32;
-        let branch_hash = branch.bytes().fold(0u32, |acc, b| {
-            acc.wrapping_mul(31).wrapping_add(b as u32)
-        });
+        let branch_hash = branch
+            .bytes()
+            .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
         let combined = ((uuid_hi as u64) << 32) | (branch_hash as u64);
         // Map u64 to i64 range safely (pg_advisory_lock takes a bigint).
         combined as i64
@@ -62,11 +62,10 @@ impl LockManager {
     pub async fn try_acquire(&self, project_id: Uuid, branch: &str) -> Result<AdvisoryLock> {
         let key = Self::derive_key(project_id, branch);
 
-        let acquired: (bool,) =
-            sqlx::query_as("SELECT pg_try_advisory_lock($1)")
-                .bind(key)
-                .fetch_one(&self.pool)
-                .await?;
+        let acquired: (bool,) = sqlx::query_as("SELECT pg_try_advisory_lock($1)")
+            .bind(key)
+            .fetch_one(&self.pool)
+            .await?;
 
         if acquired.0 {
             tracing::debug!(key, "advisory lock acquired");
@@ -75,9 +74,7 @@ impl LockManager {
                 key,
             })
         } else {
-            Err(ConductorError::LockBusy(format!(
-                "{project_id}/{branch}"
-            )))
+            Err(ConductorError::LockBusy(format!("{project_id}/{branch}")))
         }
     }
 

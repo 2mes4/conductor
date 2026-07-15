@@ -60,28 +60,32 @@ pub fn compact_history(history: &Value, max_tokens: usize) -> Result<(Value, usi
             .collect();
 
         // Sort largest first — prune the biggest offenders first.
-        tool_results.sort_by(|a, b| b.1.cmp(&a.1));
+        tool_results.sort_by_key(|b| std::cmp::Reverse(b.1));
 
+        // Replace the densest tool results with compact placeholders.
         for (idx, _size) in &tool_results {
-            // Replace with a compact placeholder.
             if let Some(msg) = messages.get_mut(*idx) {
                 if let Some(obj) = msg.as_object_mut() {
                     if let Some(content) = obj.get_mut("content") {
-                        *content = Value::String("[compacted: tool output pruned to save context]".into());
+                        *content =
+                            Value::String("[compacted: tool output pruned to save context]".into());
                     }
                 }
-            }
-
-            let new_count = count_tokens(&compacted);
-            if new_count <= max_tokens {
-                tracing::info!(new_tokens = new_count, "compaction complete");
-                return Ok((compacted, new_count));
             }
         }
     }
 
+    // Check token count after all replacements.
     let final_count = count_tokens(&compacted);
-    tracing::warn!(final_tokens = final_count, "could not reach token budget after compaction");
+    if final_count <= max_tokens {
+        tracing::info!(new_tokens = final_count, "compaction complete");
+        return Ok((compacted, final_count));
+    }
+
+    tracing::warn!(
+        final_tokens = final_count,
+        "could not reach token budget after compaction"
+    );
     Ok((compacted, final_count))
 }
 

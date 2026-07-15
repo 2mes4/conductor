@@ -29,12 +29,7 @@ pub struct Workspace {
 
 impl Workspace {
     /// Construct the workspace path for a given tenant/project/branch triple.
-    pub fn new(
-        workspace_root: &str,
-        tenant_slug: &str,
-        project_slug: &str,
-        branch: &str,
-    ) -> Self {
+    pub fn new(workspace_root: &str, tenant_slug: &str, project_slug: &str, branch: &str) -> Self {
         let root = PathBuf::from(workspace_root)
             .join(tenant_slug)
             .join(project_slug)

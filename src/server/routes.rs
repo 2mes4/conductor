@@ -65,7 +65,11 @@ async fn create_session(
         updated_at: chrono::Utc::now(),
     };
 
-    state.db.create_session(&session).await.map_err(ApiError::from)?;
+    state
+        .db
+        .create_session(&session)
+        .await
+        .map_err(ApiError::from)?;
 
     let task = AgentTask {
         tenant_id: tenant.id,
@@ -80,9 +84,10 @@ async fn create_session(
     let app_state = state.clone();
     let session_id = session.id;
     tokio::spawn(async move {
+        let error_state = app_state.clone();
         if let Err(e) = crate::orchestrator::run_session(app_state, session_id, task).await {
             tracing::error!(session_id = %session_id, error = %e, "session failed");
-            let _ = app_state
+            let _ = error_state
                 .db
                 .update_session_status(session_id, SessionStatus::Failed)
                 .await;
