@@ -52,7 +52,7 @@ toml = "0.8"
 git2 = "0.19"
 
 # Token counting for context compaction
-tiktoken-rs = "0.6"
+tiktoken-rs = "0.12"
 
 # Error handling
 thiserror = "2"
