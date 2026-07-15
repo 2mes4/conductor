@@ -11,4 +11,4 @@ pub mod opencode;
 pub mod sanitize;
 
 pub use manifest::{AgentStackManifest, ToolDefinition};
-pub use opencode::OpenCodeBridge;
+pub use opencode::{BridgeConfig, InjectionPayload, OpenCodeBridge};

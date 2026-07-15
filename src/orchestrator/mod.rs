@@ -1,32 +1,29 @@
-//! The orchestration lifecycle — ties the four architectural layers together.
+//! The orchestration lifecycle — ties all layers together.
 //!
 //! ```text
-//!  ┌─────────┐    ┌──────────┐    ┌─────────┐    ┌──────────┐
-//!  │  1.State │───▶│2.Checkout│───▶│3.Bridge │───▶│4.Teardown│
-//!  │ Lock+DB  │    │ target+   │    │ OpenCode│    │ compact+ │
-//!  │          │◀───│  skills   │◀───│ inject  │◀───│ persist  │
-//!  └─────────┘    └──────────┘    └─────────┘    └──────────┘
+//!  ┌───────────┐   ┌────────────┐   ┌───────────────┐   ┌──────────────┐
+//!  │ 1. State  │──▶│ 2. Checkout│──▶│ 3. Bridge     │──▶│ 4. Teardown  │
+//!  │ Lock + DB │   │ target +   │   │ Runtime + MCP │   │ compact +    │
+//!  │           │◀──│  skills    │◀──│ + inject      │◀──│ persist      │
+//!  └───────────┘   └────────────┘   └───────────────┘   └──────────────┘
+//!                                       │
+//!                                  ┌────┴────┐
+//!                                  │ MCP     │
+//!                                  │ config  │
+//!                                  └─────────┘
 //! ```
 
-use std::path::PathBuf;
-
-use uuid::Uuid;
-
-use crate::bridge::{manifest::AgentStackManifest, OpenCodeBridge};
+use crate::bridge::{manifest::AgentStackManifest, BridgeConfig, OpenCodeBridge};
 use crate::checkout::{skills, target, Workspace};
 use crate::error::{ConductorError, Result};
+use crate::mcp::{CacheMode, CodebaseMemoryMcp};
 use crate::models::{AgentTask, SessionStatus};
+use crate::runtime::{self, RuntimeKind};
 use crate::server::AppState;
 use crate::teardown;
+use uuid::Uuid;
 
 /// Execute the full agent session lifecycle.
-///
-/// This function orchestrates all four layers sequentially:
-///
-/// 1. **Acquire lock** — `pg_advisory_lock` for the project/branch pair.
-/// 2. **Prepare workspace** — Dual-Checkout of `/target` and `/skills`.
-/// 3. **Run agent** — spawn OpenCode, inject payload, wait for completion.
-/// 4. **Teardown** — compact history, commit + push, persist to DB, cleanup.
 pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> Result<()> {
     // ── Layer 1: Acquire distributed lock ────────────────────
     state
@@ -34,7 +31,7 @@ pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> 
         .update_session_status(session_id, SessionStatus::Preparing)
         .await?;
 
-    let lock = state.locks.acquire(task.tenant_id, task.branch()).await?;
+    let lock = state.locks.acquire(task.tenant_id, &task.branch).await?;
 
     // ── Layer 2: Dual-Checkout ───────────────────────────────
     let project = state.db.get_project(task.project_id).await?;
@@ -55,6 +52,25 @@ pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> 
     let manifest_path = workspace.skills.join("manifest.json");
     let manifest = load_manifest(&manifest_path)?;
 
+    // ── MCP Setup ────────────────────────────────────────────
+    // Configure codebase-memory-mcp scoped to /target.
+    let cache_mode = if workspace.mcp_cache.exists() {
+        CacheMode::Persistent
+    } else {
+        CacheMode::Ephemeral
+    };
+
+    let mcp = CodebaseMemoryMcp::new("/target", cache_mode)
+        .map_err(|e| ConductorError::Other(format!("MCP setup failed: {e}")))?;
+
+    // Write MCP settings to a temp file that will be mounted into the guest.
+    let mcp_settings_host = workspace.root.join("mcp_settings.json");
+    mcp.write_settings(&mcp_settings_host)?;
+
+    if cache_mode == CacheMode::Persistent {
+        workspace.ensure_mcp_cache()?;
+    }
+
     // Recover history from a previous session if resuming.
     let history = if let Some(prev) = task.resume_from {
         state.db.get_session(prev).await?.history
@@ -66,28 +82,41 @@ pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> 
             .unwrap_or_else(|| serde_json::json!({"messages": []}))
     };
 
-    // ── Layer 3: Bridge — spawn OpenCode & inject payload ────
+    // ── Layer 3: Bridge — provision runtime & inject payload ─
     state
         .db
         .update_session_status(session_id, SessionStatus::Running)
         .await?;
 
-    let opencode_path = std::env::var("OPENCODE_PATH").unwrap_or_else(|_| "opencode".into());
+    let runtime_kind = RuntimeKind::from_env();
+    let runtime_backend = runtime::create(&runtime_kind);
+    let mut bridge = OpenCodeBridge::new(runtime_backend);
 
-    let mut bridge = OpenCodeBridge::spawn(
-        &PathBuf::from(&opencode_path),
-        &workspace.target,
-        &workspace.skills,
-        &std::env::var("OPENCODE_API_KEY").unwrap_or_default(),
-    )
-    .await?;
+    let bridge_config = BridgeConfig {
+        target_host: workspace.target.clone(),
+        skills_host: workspace.skills.clone(),
+        mcp_settings_host: Some(mcp_settings_host.clone()),
+        mcp_cache_host: if cache_mode == CacheMode::Persistent {
+            Some(workspace.mcp_cache.clone())
+        } else {
+            None
+        },
+        api_key: std::env::var("OPENCODE_API_KEY").unwrap_or_default(),
+        timeout_secs: state.config.session_timeout_secs,
+    };
 
-    let payload = OpenCodeBridge::build_payload(session_id, &task.instruction, history, &manifest);
+    bridge.start(&bridge_config).await?;
+
+    let mut payload =
+        OpenCodeBridge::build_payload(session_id, &task.instruction, history, &manifest);
+    payload.mcp_settings_path = bridge
+        .provisioned()
+        .and_then(|p| p.mcp_settings_path.clone())
+        .map(|p| p.to_string_lossy().to_string());
+
     bridge.inject(&payload).await?;
 
-    let run_result = bridge
-        .wait_with_timeout(state.config.session_timeout_secs)
-        .await;
+    let run_result = bridge.wait(state.config.session_timeout_secs).await;
 
     // ── Layer 4: Teardown ────────────────────────────────────
     state
@@ -95,15 +124,11 @@ pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> 
         .update_session_status(session_id, SessionStatus::TearingDown)
         .await?;
 
-    // Extract session output (placeholder — real implementation reads from
-    // the OpenCode process stdout/API).
     let raw_history = serde_json::json!({"messages": []});
 
-    // Compact if over token budget.
     let (compacted, tokens) =
         teardown::compact::compact_history(&raw_history, state.config.max_context_tokens)?;
 
-    // Commit + push changes.
     let commit_sha = match &run_result {
         Ok(()) => teardown::persist::save_changes(
             &target_repo,
@@ -130,8 +155,10 @@ pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> 
         )
         .await?;
 
-    // Kill the OpenCode process if still alive.
-    let _ = bridge.kill().await;
+    let _ = bridge.teardown().await;
+
+    // Clean up the MCP settings file.
+    let _ = std::fs::remove_file(&mcp_settings_host);
 
     // Clean up the workspace.
     let _ = teardown::persist::cleanup_workspace(&workspace.root);
@@ -141,12 +168,6 @@ pub async fn run_session(state: AppState, session_id: Uuid, task: AgentTask) -> 
 
     tracing::info!(%session_id, ?final_status, "session lifecycle complete");
     Ok(())
-}
-
-impl AgentTask {
-    fn branch(&self) -> &str {
-        &self.branch
-    }
 }
 
 /// Load and validate the `AgentStackManifest` from the skills directory.
@@ -162,4 +183,15 @@ fn load_manifest(path: &std::path::Path) -> Result<AgentStackManifest> {
         .map_err(|e| ConductorError::InvalidManifest(e.to_string()))?;
     tracing::info!(tools = manifest.tools.len(), "manifest loaded");
     Ok(manifest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_manifest_fails_for_missing_file() {
+        let result = load_manifest(std::path::Path::new("/nonexistent/manifest.json"));
+        assert!(result.is_err());
+    }
 }

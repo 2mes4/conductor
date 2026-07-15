@@ -94,12 +94,16 @@ conductor/
 │   ├── state/               # Layer 1: DB + advisory locks
 │   ├── checkout/            # Layer 2: Dual-Checkout (git2)
 │   ├── bridge/              # Layer 3: Manifest + sanitize + OpenCode
+│   ├── runtime/             # Execution backends (MicroVM / Local)
+│   ├── mcp/                 # codebase-memory-mcp integration
 │   ├── teardown/            # Layer 4: Compaction + persist + cleanup
 │   ├── orchestrator/        # Lifecycle tying all layers together
 │   └── server/              # axum HTTP + WebSocket server
 ├── migrations/              # PostgreSQL schema migrations
 ├── examples/                # Example manifest.json
 ├── docs/                    # Documentation
+│   ├── microvm.md           # MicroVM justification & host sizing
+│   └── mcp-integration.md   # codebase-memory-mcp strategy
 └── docker-compose.yml       # Local PostgreSQL
 ```
 
@@ -136,6 +140,15 @@ All configuration is via environment variables (see [`.env.example`](.env.exampl
 ## Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## Documentation
+
+- [Architecture](ARCHITECTURE.md) — Foundational specification
+- [MicroVM Execution](docs/microvm.md) — Why MicroVMs & host sizing
+- [MCP Integration](docs/mcp-integration.md) — codebase-memory-mcp strategy
+- [Getting Started](docs/getting-started.md) — Local setup guide
+- [Configuration](docs/configuration.md) — All environment variables
+- [API Reference](docs/api-reference.md) — REST & WebSocket API
 
 ## License
 
